@@ -21,9 +21,13 @@ def get_client(api_key: str):
 
 
 # ─── HEALTH CHECK ───
-@app.get("/")
-def root():
+@app.get("/health")
+def health():
     return {"status": "ok", "message": "CallCoach API ready"}
+
+@app.options("/{rest_of_path:path}")
+def options_handler():
+    return {"status": "ok"}
 
 
 # ─── VERIFY KEY ───
@@ -213,3 +217,4 @@ def chat(req: ChatRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
