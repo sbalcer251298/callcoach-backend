@@ -11,7 +11,7 @@ app = FastAPI(title="CallCoach API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,14 +54,12 @@ async def transcribe(
     try:
         client = get_client(api_key)
 
-        # Сохраняем файл во временный файл
         suffix = "." + (file.filename.split(".")[-1] if file.filename else "mp3")
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             content = await file.read()
             tmp.write(content)
             tmp_path = tmp.name
 
-        # Транскрибируем через Whisper
         with open(tmp_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -73,7 +71,6 @@ async def transcribe(
 
         os.unlink(tmp_path)
 
-        # Форматируем транскрипт с таймкодами
         segments = []
         if hasattr(transcript, "segments") and transcript.segments:
             for seg in transcript.segments:
@@ -113,24 +110,15 @@ def analyze(req: AnalyzeRequest):
     try:
         client = get_client(req.api_key)
 
-        # Формируем описание параметров оценки
-        scoring_info = ""
-        if req.scoring_params and req.scoring_weights:
-            scoring_info = "\n\nПАРАМЕТРЫ ОЦЕНКИ (оцени каждый от 0 до 100):\n"
-            for p in req.scoring_params:
-                w = req.scoring_weights.get(p.get("key", ""), 0)
-                scoring_info += f"- {p.get('label', '')} (вес {w}%): {p.get('desc', '')}\n"
-            scoring_info += "\nИТОГОВЫЙ БАЛЛ = сумма (оценка_параметра × вес / 100)"
-
-        prompt = f"""Ты — эксперт по продажам с 10-летним опытом работы РОПом в онлайн-школах. 
+        prompt = """Ты — эксперт по продажам с 10-летним опытом работы РОПом в онлайн-школах. 
 Проанализируй звонок менеджера и дай глубокий разбор.
 
-МЕНЕДЖЕР: {req.manager_name}
-КЛИЕНТ: {req.client_name}  
-ТИП ЗВОНКА: {req.call_type}
+МЕНЕДЖЕР: """ + req.manager_name + """
+КЛИЕНТ: """ + req.client_name + """
+ТИП ЗВОНКА: """ + req.call_type + """
 
 ТРАНСКРИПТ ЗВОНКА:
-{req.transcript[:12000]}
+""" + req.transcript[:12000] + """
 
 Дай разбор в следующем формате:
 
@@ -187,33 +175,43 @@ def analyze(req: AnalyzeRequest):
 
 ---
 
-В конце верни JSON:
-```json
-{{"scores": {{"diagnosis": X, "pain": X, "presentation": X, "objections": X, "closing": X}}, "total": X, "result": "Продал/Думает/Не продал"}}
+ВАЖНО: В самом конце ответа добавь строку в формате:
+SCORES_JSON:{"diagnosis": число, "pain": число, "presentation": число, "objections": число, "closing": число, "total": число, "result": "Продал" или "Думает" или "Не продал"}
+
+Где каждое число — оценка от 0 до 100."""
 
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
+            max_tokens=3000,
             temperature=0.7
         )
 
         text = response.choices[0].message.content or ""
 
         # Извлекаем JSON с оценками
-        import re, json
+        import re
+        import json
+        
         scores = {}
         total = 50
         result = "Думает"
 
-        json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+        # Ищем SCORES_JSON в конце ответа
+        json_match = re.search(r'SCORES_JSON:\s*(\{[^}]+\})', text)
         if json_match:
             try:
                 data = json.loads(json_match.group(1))
-                scores = data.get("scores", {})
+                scores = {
+                    "diagnosis": data.get("diagnosis", 50),
+                    "pain": data.get("pain", 50),
+                    "presentation": data.get("presentation", 50),
+                    "objections": data.get("objections", 50),
+                    "closing": data.get("closing", 50)
+                }
                 total = data.get("total", 50)
                 result = data.get("result", "Думает")
-                # Убираем JSON блок из текста ответа
+                # Убираем JSON из текста
                 text = text[:json_match.start()].strip()
             except:
                 pass
@@ -259,5 +257,3 @@ def chat(req: ChatRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
